@@ -183,7 +183,7 @@ fn save_to_database(data: &mut Response, db: &Path) -> Result<(), rusqlite::Erro
             0
         }
     };
-    let heat_units: i16 = (max + min - 55) / 2;
+    let heat_units: i16 = ((max + min) / 2) - 55;
     let rainfall: f64 = match summary.precipi.parse() {
         Ok(value) => value,
         Err(e) => {
@@ -238,7 +238,7 @@ fn main() {
     if resp.status().is_success() {
         let mut yesterday_weather: Response =
             resp.json().expect("Failed to decode wunderground json response");
-        println!("Weather response: {:?}", yesterday_weather);
+        //println!("Weather response: {:?}", yesterday_weather);
         match save_to_database(&mut yesterday_weather, &Path::new(&database)) {
             Err(e) => {
                 println!("Failed to save response to database: {}", e);

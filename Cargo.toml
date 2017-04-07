@@ -4,3 +4,10 @@ version = "0.1.0"
 authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 
 [dependencies]
+clap = "*"
+chrono = { version="*", features=["serde"]}
+reqwest = "*"
+rusqlite = "*"
+serde = "~0.9"
+serde_derive = "~0.9"
+serde_json = "~0.9"

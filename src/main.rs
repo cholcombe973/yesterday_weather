@@ -1,253 +1,173 @@
-#[macro_use]
-extern crate clap;
-extern crate reqwest;
-extern crate rusqlite;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-
 use std::path::Path;
+use std::str::FromStr;
 
-use clap::{Arg, App};
-use rusqlite::Connection;
+use chrono::prelude::*;
+use chrono::{DateTime, Duration, Local, NaiveDateTime};
+use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgMatches};
+use forecast::{ApiClient, ExcludeBlock, Lang, TimeMachineRequestBuilder, Units};
+use reqwest::Client;
+use rusqlite::{Connection, params};
+use serde_json::Value;
 
+fn save_to_database(data: Value, db: &Path) -> Result<(), rusqlite::Error> {
+    let data = data.as_object().expect("Invalid json object returned");
 
-#[derive(Debug, Deserialize)]
-pub struct ResponseFeature {
-    pub yesterday: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct JsonResponse {
-    pub version: String,
-    #[serde(rename(deserialize = "termsofService"))]
-    pub terms_of_service: String,
-    pub features: ResponseFeature,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HistoryDate {
-    pub pretty: String,
-    pub year: String,
-    pub mon: String,
-    pub mday: String,
-    pub hour: String,
-    pub min: String,
-    pub tzname: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Observation {
-    pub date: HistoryDate,
-    pub utcdate: HistoryDate,
-    // Metric
-    pub tempm: String,
-    //Imperial
-    pub tempi: String,
-    pub dewptm: String,
-    pub dewpti: String,
-    pub hum: String,
-    pub wspdm: String,
-    pub wspdi: String,
-    pub wgustm: String,
-    pub wgusti: String,
-    pub wdird: String,
-    pub wdire: String,
-    pub vism: String,
-    pub visi: String,
-    pub pressurem: String,
-    pub pressurei: String,
-    pub windchillm: String,
-    pub windchilli: String,
-    pub heatindexm: String,
-    pub heatindexi: String,
-    pub precipm: String,
-    pub precipi: String,
-    pub conds: String,
-    pub icon: String,
-    pub fog: String,
-    pub rain: String,
-    pub snow: String,
-    pub hail: String,
-    pub thunder: String,
-    pub tornado: String,
-    pub metar: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Dailysummary {
-    pub date: HistoryDate,
-    pub fog: String,
-    pub rain: String,
-    pub snow: String,
-    pub snowfallm: String,
-    pub snowfalli: String,
-    pub monthtodatesnowfallm: String,
-    pub monthtodatesnowfalli: String,
-    pub since1julsnowfallm: String,
-    pub since1julsnowfalli: String,
-    pub snowdepthm: String,
-    pub snowdepthi: String,
-    pub hail: String,
-    pub thunder: String,
-    pub tornado: String,
-    pub meantempm: String,
-    pub meantempi: String,
-    pub meandewptm: String,
-    pub meandewpti: String,
-    pub meanpressurem: String,
-    pub meanpressurei: String,
-    pub meanwindspdm: String,
-    pub meanwindspdi: String,
-    pub meanwdire: String,
-    pub meanwdird: String,
-    pub meanvism: String,
-    pub meanvisi: String,
-    pub humidity: String,
-    // Metric
-    pub maxtempm: String,
-    // Imperial
-    pub maxtempi: String,
-    pub mintempm: String,
-    pub mintempi: String,
-    pub maxhumidity: String,
-    pub minhumidity: String,
-    pub maxdewptm: String,
-    pub maxdewpti: String,
-    pub mindewptm: String,
-    pub mindewpti: String,
-    pub maxpressurem: String,
-    pub maxpressurei: String,
-    pub minpressurem: String,
-    pub minpressurei: String,
-    pub maxwspdm: String,
-    pub maxwspdi: String,
-    pub minwspdm: String,
-    pub minwspdi: String,
-    pub maxvism: String,
-    pub maxvisi: String,
-    pub minvism: String,
-    pub minvisi: String,
-    pub gdegreedays: String,
-    pub heatingdegreedays: String,
-    pub coolingdegreedays: String,
-    pub precipm: String,
-    pub precipi: String,
-    pub precipsource: String,
-    pub heatingdegreedaysnormal: String,
-    pub monthtodateheatingdegreedays: String,
-    pub monthtodateheatingdegreedaysnormal: String,
-    pub since1sepheatingdegreedays: String,
-    pub since1sepheatingdegreedaysnormal: String,
-    pub since1julheatingdegreedays: String,
-    pub since1julheatingdegreedaysnormal: String,
-    pub coolingdegreedaysnormal: String,
-    pub monthtodatecoolingdegreedays: String,
-    pub monthtodatecoolingdegreedaysnormal: String,
-    pub since1sepcoolingdegreedays: String,
-    pub since1sepcoolingdegreedaysnormal: String,
-    pub since1jancoolingdegreedays: String,
-    pub since1jancoolingdegreedaysnormal: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct History {
-    pub date: HistoryDate,
-    pub utcdate: HistoryDate,
-    pub observations: Vec<Observation>,
-    pub dailysummary: Vec<Dailysummary>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Response {
-    pub response: JsonResponse,
-    pub history: History,
-}
-
-fn save_to_database(data: &mut Response, db: &Path) -> Result<(), rusqlite::Error> {
-    let summary = data.history
-        .dailysummary
-        .pop()
-        .unwrap();
-    let max: i16 = match summary.maxtempi.parse() {
-        Ok(value) => value,
-        Err(e) => {
-            println!("maxtempi i16 parse failed with error: {}", e);
-            0
+    let max: f64 = match data.get("temperatureMax").unwrap().as_f64() {
+        Some(value) => value,
+        None => {
+            println!("temperatureMax f64 parse failed");
+            0.00
         }
     };
-    let min: i16 = match summary.mintempi.parse() {
-        Ok(value) => value,
-        Err(e) => {
-            println!("mintempi i16 parse failed with error: {}", e);
-            0
+    let min: f64  = match data.get("temperatureMin").unwrap().as_f64() {
+        Some(value) => value,
+        None => {
+            println!("mintempi f64 parse failed");
+            0.00
         }
     };
-    let heat_units: i16 = ((max + min) / 2) - 55;
-    let rainfall: f64 = match summary.precipi.parse() {
-        Ok(value) => value,
-        Err(e) => {
-            println!("rainfall f32 parse failed with error: {}", e);
+    let heat_units = ((max + min) / 2_f64) - 55_f64;
+    let rainfall: f64 = match data.get("precipIntensityMax").unwrap().as_f64() {
+        Some(value) => value,
+        None => {
+            println!("rainfall f64 parse failed");
             0.00
         }
     };
 
     let conn = Connection::open(db)?;
-    let _ = conn.execute("create table if not exists heatunits (temp_min int, temp_max int,date \
-                  datetime,heat_units int, rainfall int, primary key (date))",
-                         &[])?;
+    let _ = conn.execute(
+        "create table if not exists heatunits (temp_min int, temp_max int,date \
+         datetime,heat_units int, rainfall int, primary key (date))",
+        params![],
+    )?;
 
-    conn.execute("insert into heatunits values (?, ?, ?, ?, ?)",
-                 &[&max,
-                   &min,
-                   &format!("{year}-{month}-{day} {hour}:{minute}",
-                            year = summary.date.year,
-                            month = summary.date.mon,
-                            day = summary.date.mday,
-                            hour = summary.date.hour,
-                            minute = summary.date.min),
-                   &heat_units,
-                   &rainfall])?;
+    conn.execute(
+        "insert into heatunits values (?, ?, date('now', '-1 day'), ?, ?)",
+        &[
+            &max,
+            &min,
+            &heat_units,
+            &rainfall,
+        ],
+    )?;
     Ok(())
 }
 
-fn main() {
-    let matches = App::new("Yesterdays Weather")
+fn get_matches<'a>() -> ArgMatches<'a> {
+    App::new("Yesterdays Weather")
+        .setting(AppSettings::AllowLeadingHyphen)
         .version(crate_version!())
         .author(crate_authors!())
         .about("Logs yesterdays weather to sqlite")
-        .arg(Arg::with_name("api_key")
-                 .short("k")
-                 .help("The weather underground api key to use")
-                 .required(true)
-                 .takes_value(true))
-        .arg(Arg::with_name("database")
-                 .default_value("heat_units.sqlite3")
-                 .short("d")
-                 .help("The sqlite database to save to")
-                 .required(true)
-                 .takes_value(true))
-        .get_matches();
+        .arg(
+            Arg::with_name("api_key")
+                .long("api_key")
+                .help("The darksky api key to use")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("database")
+                .default_value("heat_units.sqlite3")
+                .long("database")
+                .help("The sqlite database to save to")
+                .required(true)
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("lat")
+                .long("lat")
+                .help("The latitude to check")
+                .required(true)
+                .takes_value(true)
+                .validator(|lat| match f64::from_str(&lat) {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(format!(
+                        "latitude must be a floating point: {}",
+                        e.to_string()
+                    )),
+                }),
+        )
+        .arg(
+            Arg::with_name("long")
+                .long("long")
+                .help("The longitude to check")
+                .required(true)
+                .takes_value(true)
+                .validator(|lat| match f64::from_str(&lat) {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(format!(
+                        "longitude must be a floating point: {}",
+                        e.to_string()
+                    )),
+                }),
+        )
+        .get_matches()
+}
+
+fn get_forecast(api_key: &str, latitude: f64, longitude: f64) -> Result<Value, String> {
+    let reqwest_client = Client::new();
+    let api_client = ApiClient::new(&reqwest_client);
+    // Find yesterday's timestamp so we can send that to darksky
+    let yesterday_time: DateTime<Local> = Local::now() - Duration::hours(24);
+    let native_time = NaiveDateTime::from_timestamp(yesterday_time.timestamp(), 0);
+    let yesterday: DateTime<Utc> = DateTime::from_utc(native_time, Utc);
+
+    let mut blocks = vec![
+        ExcludeBlock::Alerts,
+        ExcludeBlock::Currently,
+        ExcludeBlock::Hourly,
+        ExcludeBlock::Minutely,
+    ];
+    let time_machine_request =
+        TimeMachineRequestBuilder::new(api_key, latitude, longitude, yesterday.timestamp() as u64)
+            .exclude_block(ExcludeBlock::Hourly)
+            .exclude_blocks(&mut blocks)
+            .lang(Lang::English)
+            .units(Units::Imperial)
+            .build();
+    let forecast = api_client
+        .get_time_machine(time_machine_request)
+        .map_err(|e| e.to_string())?;
+    let res: Value = reqwest::get(forecast.url().as_str())
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .map_err(|e| e.to_string())?;
+
+    let weather = res["daily"]["data"][0].clone();
+    if weather.is_null() {
+        return Err(format!(
+            "darksky api returned null for url: {}",
+            forecast.url()
+        ));
+    }
+    Ok(weather)
+}
+
+fn main() {
+    let matches = get_matches();
     let api_key = matches.value_of("api_key").expect("Failed to get api key");
+    let lat = matches.value_of("lat").expect("Failed to get latitude");
+    let long = matches.value_of("long").expect("Failed to get longitude");
     let database = matches.value_of("database").unwrap();
 
-    let mut resp = reqwest::get(&format!("https://api.wunderground.\
-                                               com/api/{}/yesterday/q/OR/Fairview.json",
-                                         api_key))
-            .expect("Failed to query weather underground");
-    if resp.status().is_success() {
-        let mut yesterday_weather: Response =
-            resp.json().expect("Failed to decode wunderground json response");
-        //println!("Weather response: {:?}", yesterday_weather);
-        match save_to_database(&mut yesterday_weather, &Path::new(&database)) {
-            Err(e) => {
-                println!("Failed to save response to database: {}", e);
-                return;
-            }
-            _ => {}
+    let lat = f64::from_str(&lat).unwrap();
+    let long = f64::from_str(&long).unwrap();
+    let forecast = match get_forecast(&api_key, lat, long) {
+        Ok(f) => f,
+        Err(e) => {
+            println!("error getting forecast: {}", e);
+            return;
         }
-    } else {
-        println!("Query to weather underground failed with error: {:?}",
-                 resp.status().canonical_reason());
+    };
+    match save_to_database(forecast, &Path::new(&database)) {
+        Err(e) => {
+            println!("Failed to save response to database: {}", e);
+            return;
+        }
+        _ => {}
     }
 }
